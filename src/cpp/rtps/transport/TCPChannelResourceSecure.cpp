@@ -14,8 +14,9 @@
 
 #include <rtps/transport/TCPChannelResourceSecure.h>
 
-#include <future>
 #include <chrono>
+#include <future>
+#include <thread>
 
 #include <fastrtps/utils/IPLocator.h>
 #include <rtps/transport/TCPTransportInterface.h>
@@ -209,7 +210,7 @@ size_t TCPChannelResourceSecure::send(
 
     if (eConnecting < connection_status_)
     {
-        if (parent_->get_non_blocking_send() &&
+        if (parent_->configuration()->non_blocking_send &&
                 !check_socket_send_buffer(header_size + size,
                 secure_socket_->lowest_layer().native_handle()))
         {
@@ -279,7 +280,9 @@ asio::ip::tcp::endpoint TCPChannelResourceSecure::local_endpoint(
 void TCPChannelResourceSecure::set_options(
         const TCPTransportDescriptor* options)
 {
-    TCPChannelResource::set_socket_options(secure_socket_->lowest_layer(), options);
+    secure_socket_->lowest_layer().set_option(socket_base::receive_buffer_size(options->receiveBufferSize));
+    secure_socket_->lowest_layer().set_option(socket_base::send_buffer_size(options->sendBufferSize));
+    secure_socket_->lowest_layer().set_option(ip::tcp::no_delay(options->enable_tcp_nodelay));
 }
 
 void TCPChannelResourceSecure::set_tls_verify_mode(
