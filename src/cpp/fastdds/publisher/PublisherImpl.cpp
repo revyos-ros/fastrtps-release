@@ -22,8 +22,6 @@
 #include <fastdds/domain/DomainParticipantImpl.hpp>
 #include <fastdds/topic/TopicDescriptionImpl.hpp>
 
-#include <fastdds/utils/QosConverters.hpp>
-
 #include <fastdds/dds/publisher/Publisher.hpp>
 #include <fastdds/dds/publisher/PublisherListener.hpp>
 #include <fastdds/dds/publisher/DataWriter.hpp>
@@ -31,20 +29,15 @@
 #include <fastdds/dds/domain/DomainParticipantListener.hpp>
 #include <fastdds/dds/topic/TypeSupport.hpp>
 
-#include <fastdds/dds/log/Log.hpp>
+#include <fastdds/rtps/common/Property.h>
 #include <fastdds/rtps/participant/RTPSParticipant.h>
-
-#include <rtps/network/utils/netmask_filter.hpp>
+#include <fastdds/dds/log/Log.hpp>
 
 #include <fastrtps/attributes/PublisherAttributes.h>
 
 #include <fastrtps/xmlparser/XMLProfileManager.h>
 
 #include <functional>
-
-#ifdef FASTDDS_STATISTICS
-#include <statistics/types/monitorservice_types.h>
-#endif //FASTDDS_STATISTICS
 
 namespace eprosima {
 namespace fastdds {
@@ -53,8 +46,60 @@ namespace dds {
 using fastrtps::xmlparser::XMLProfileManager;
 using fastrtps::xmlparser::XMLP_ret;
 using fastrtps::rtps::InstanceHandle_t;
+using fastrtps::rtps::Property;
 using fastrtps::Duration_t;
 using fastrtps::PublisherAttributes;
+
+static void set_qos_from_attributes(
+        DataWriterQos& qos,
+        const PublisherAttributes& attr)
+{
+    qos.writer_resource_limits().matched_subscriber_allocation = attr.matched_subscriber_allocation;
+    qos.properties() = attr.properties;
+    qos.throughput_controller() = attr.throughputController;
+    qos.endpoint().unicast_locator_list = attr.unicastLocatorList;
+    qos.endpoint().multicast_locator_list = attr.multicastLocatorList;
+    qos.endpoint().remote_locator_list = attr.remoteLocatorList;
+    qos.endpoint().history_memory_policy = attr.historyMemoryPolicy;
+    qos.endpoint().user_defined_id = attr.getUserDefinedID();
+    qos.endpoint().entity_id = attr.getEntityID();
+    qos.reliable_writer_qos().times = attr.times;
+    qos.reliable_writer_qos().disable_positive_acks = attr.qos.m_disablePositiveACKs;
+    qos.durability() = attr.qos.m_durability;
+    qos.durability_service() = attr.qos.m_durabilityService;
+    qos.deadline() = attr.qos.m_deadline;
+    qos.latency_budget() = attr.qos.m_latencyBudget;
+    qos.liveliness() = attr.qos.m_liveliness;
+    qos.reliability() = attr.qos.m_reliability;
+    qos.lifespan() = attr.qos.m_lifespan;
+    qos.user_data().setValue(attr.qos.m_userData);
+    qos.ownership() = attr.qos.m_ownership;
+    qos.ownership_strength() = attr.qos.m_ownershipStrength;
+    qos.destination_order() = attr.qos.m_destinationOrder;
+    qos.representation() = attr.qos.representation;
+    qos.publish_mode() = attr.qos.m_publishMode;
+    qos.history() = attr.topic.historyQos;
+    qos.resource_limits() = attr.topic.resourceLimitsQos;
+    qos.data_sharing() = attr.qos.data_sharing;
+    qos.reliable_writer_qos().disable_heartbeat_piggyback = attr.qos.disable_heartbeat_piggyback;
+
+    if (attr.qos.m_partition.size() > 0 )
+    {
+        Property property;
+        property.name("partitions");
+        std::string partitions;
+        bool is_first_partition = true;
+
+        for (auto partition : attr.qos.m_partition.names())
+        {
+            partitions += (is_first_partition ? "" : ";") + partition;
+            is_first_partition = false;
+        }
+
+        property.value(std::move(partitions));
+        qos.properties().properties().push_back(std::move(property));
+    }
+}
 
 PublisherImpl::PublisherImpl(
         DomainParticipantImpl* p,
@@ -65,12 +110,12 @@ PublisherImpl::PublisherImpl(
     , listener_(listen)
     , publisher_listener_(this)
     , user_publisher_(nullptr)
-    , rtps_participant_(p->get_rtps_participant())
+    , rtps_participant_(p->rtps_participant())
     , default_datawriter_qos_(DATAWRITER_QOS_DEFAULT)
 {
     PublisherAttributes pub_attr;
     XMLProfileManager::getDefaultPublisherAttributes(pub_attr);
-    utils::set_qos_from_attributes(default_datawriter_qos_, pub_attr);
+    set_qos_from_attributes(default_datawriter_qos_, pub_attr);
 }
 
 ReturnCode_t PublisherImpl::enable()
@@ -212,20 +257,18 @@ DataWriterImpl* PublisherImpl::create_datawriter_impl(
         const TypeSupport& type,
         Topic* topic,
         const DataWriterQos& qos,
-        DataWriterListener* listener,
-        std::shared_ptr<fastrtps::rtps::IPayloadPool> payload_pool)
+        DataWriterListener* listener)
 {
-    return new DataWriterImpl(this, type, topic, qos, listener, payload_pool);
+    return new DataWriterImpl(this, type, topic, qos, listener);
 }
 
 DataWriter* PublisherImpl::create_datawriter(
         Topic* topic,
         const DataWriterQos& qos,
         DataWriterListener* listener,
-        const StatusMask& mask,
-        std::shared_ptr<fastrtps::rtps::IPayloadPool> payload_pool)
+        const StatusMask& mask)
 {
-    EPROSIMA_LOG_INFO(PUBLISHER, "CREATING WRITER IN TOPIC: " << topic->get_name());
+    logInfo(PUBLISHER, "CREATING WRITER IN TOPIC: " << topic->get_name());
     //Look for the correct type registration
     TypeSupport type_support = participant_->find_type(topic->get_type_name());
 
@@ -233,34 +276,16 @@ DataWriter* PublisherImpl::create_datawriter(
     // Check the type was registered.
     if (type_support.empty())
     {
-        EPROSIMA_LOG_ERROR(PUBLISHER, "Type: " << topic->get_type_name() << " Not Registered");
+        logError(PUBLISHER, "Type: " << topic->get_type_name() << " Not Registered");
         return nullptr;
     }
 
-    if (!DataWriterImpl::check_qos_including_resource_limits(qos, type_support))
+    if (!DataWriterImpl::check_qos(qos))
     {
         return nullptr;
     }
 
-    // Check netmask filtering preconditions
-    if (nullptr != rtps_participant_)
-    {
-        std::vector<fastdds::rtps::TransportNetmaskFilterInfo> netmask_filter_info =
-                rtps_participant_->get_netmask_filter_info();
-        std::string error_msg;
-        if (!fastdds::rtps::network::netmask_filter::check_preconditions(netmask_filter_info,
-                qos.endpoint().ignore_non_matching_locators,
-                error_msg) ||
-                !fastdds::rtps::network::netmask_filter::check_preconditions(netmask_filter_info,
-                qos.endpoint().external_unicast_locators, error_msg))
-        {
-            EPROSIMA_LOG_ERROR(PUBLISHER,
-                    "Failed to create writer -> " << error_msg);
-            return nullptr;
-        }
-    }
-
-    DataWriterImpl* impl = create_datawriter_impl(type_support, topic, qos, listener, payload_pool);
+    DataWriterImpl* impl = create_datawriter_impl(type_support, topic, qos, listener);
     return create_datawriter(topic, impl, mask);
 }
 
@@ -295,16 +320,15 @@ DataWriter* PublisherImpl::create_datawriter_with_profile(
         Topic* topic,
         const std::string& profile_name,
         DataWriterListener* listener,
-        const StatusMask& mask,
-        std::shared_ptr<fastrtps::rtps::IPayloadPool> payload_pool)
+        const StatusMask& mask)
 {
     // TODO (ILG): Change when we have full XML support for DDS QoS profiles
     PublisherAttributes attr;
     if (XMLP_ret::XML_OK == XMLProfileManager::fillPublisherAttributes(profile_name, attr))
     {
         DataWriterQos qos = default_datawriter_qos_;
-        utils::set_qos_from_attributes(qos, attr);
-        return create_datawriter(topic, qos, listener, mask, payload_pool);
+        set_qos_from_attributes(qos, attr);
+        return create_datawriter(topic, qos, listener, mask);
     }
 
     return nullptr;
@@ -404,7 +428,7 @@ bool PublisherImpl::contains_entity(
 /* TODO
    bool PublisherImpl::suspend_publications()
    {
-    EPROSIMA_LOG_ERROR(PUBLISHER, "Operation not implemented");
+    logError(PUBLISHER, "Operation not implemented");
     return false;
    }
  */
@@ -412,7 +436,7 @@ bool PublisherImpl::contains_entity(
 /* TODO
    bool PublisherImpl::resume_publications()
    {
-    EPROSIMA_LOG_ERROR(PUBLISHER, "Operation not implemented");
+    logError(PUBLISHER, "Operation not implemented");
     return false;
    }
  */
@@ -420,7 +444,7 @@ bool PublisherImpl::contains_entity(
 /* TODO
    bool PublisherImpl::begin_coherent_changes()
    {
-    EPROSIMA_LOG_ERROR(PUBLISHER, "Operation not implemented");
+    logError(PUBLISHER, "Operation not implemented");
     return false;
    }
  */
@@ -428,7 +452,7 @@ bool PublisherImpl::contains_entity(
 /* TODO
    bool PublisherImpl::end_coherent_changes()
    {
-    EPROSIMA_LOG_ERROR(PUBLISHER, "Operation not implemented");
+    logError(PUBLISHER, "Operation not implemented");
     return false;
    }
  */
@@ -458,7 +482,7 @@ void PublisherImpl::reset_default_datawriter_qos()
     DataWriterImpl::set_qos(default_datawriter_qos_, DATAWRITER_QOS_DEFAULT, true);
     PublisherAttributes attr;
     XMLProfileManager::getDefaultPublisherAttributes(attr);
-    utils::set_qos_from_attributes(default_datawriter_qos_, attr);
+    set_qos_from_attributes(default_datawriter_qos_, attr);
 }
 
 const DataWriterQos& PublisherImpl::get_default_datawriter_qos() const
@@ -474,32 +498,22 @@ const ReturnCode_t PublisherImpl::get_datawriter_qos_from_profile(
     if (XMLP_ret::XML_OK == XMLProfileManager::fillPublisherAttributes(profile_name, attr, false))
     {
         qos = default_datawriter_qos_;
-        utils::set_qos_from_attributes(qos, attr);
+        set_qos_from_attributes(qos, attr);
         return ReturnCode_t::RETCODE_OK;
     }
 
     return ReturnCode_t::RETCODE_BAD_PARAMETER;
 }
 
-ReturnCode_t PublisherImpl::copy_from_topic_qos(
-        DataWriterQos& writer_qos,
-        const TopicQos& topic_qos)
-{
-    writer_qos.durability(topic_qos.durability());
-    writer_qos.durability_service(topic_qos.durability_service());
-    writer_qos.deadline(topic_qos.deadline());
-    writer_qos.latency_budget(topic_qos.latency_budget());
-    writer_qos.liveliness(topic_qos.liveliness());
-    writer_qos.reliability(topic_qos.reliability());
-    writer_qos.destination_order(topic_qos.destination_order());
-    writer_qos.history(topic_qos.history());
-    writer_qos.resource_limits(topic_qos.resource_limits());
-    writer_qos.transport_priority(topic_qos.transport_priority());
-    writer_qos.lifespan(topic_qos.lifespan());
-    writer_qos.ownership(topic_qos.ownership());
-    writer_qos.representation(topic_qos.representation());
-    return ReturnCode_t::RETCODE_OK;
-}
+/* TODO
+   bool PublisherImpl::copy_from_topic_qos(
+        fastrtps::WriterQos&,
+        const fastrtps::TopicAttributes&) const
+   {
+    logError(PUBLISHER, "Operation not implemented");
+    return false;
+   }
+ */
 
 ReturnCode_t PublisherImpl::wait_for_acknowledgments(
         const Duration_t& max_wait)
@@ -677,86 +691,6 @@ PublisherListener* PublisherImpl::get_listener_for(
     }
     return participant_->get_listener_for(status);
 }
-
-#ifdef FASTDDS_STATISTICS
-bool PublisherImpl::get_monitoring_status(
-        statistics::MonitorServiceData& status,
-        const fastrtps::rtps::GUID_t& entity_guid)
-{
-    bool ret = false;
-    std::vector<DataWriter*> writers;
-    if (get_datawriters(writers))
-    {
-        for (auto& writer : writers)
-        {
-            if (writer->guid() == entity_guid)
-            {
-                switch (status._d())
-                {
-                    case statistics::INCOMPATIBLE_QOS:
-                    {
-                        OfferedIncompatibleQosStatus incompatible_qos_status;
-                        writer->get_offered_incompatible_qos_status(incompatible_qos_status);
-                        status.incompatible_qos_status().total_count(incompatible_qos_status.total_count);
-                        status.incompatible_qos_status().last_policy_id(incompatible_qos_status.last_policy_id);
-                        for (auto& qos : incompatible_qos_status.policies)
-                        {
-                            statistics::QosPolicyCount_s count;
-                            count.count(qos.count);
-                            count.policy_id(qos.policy_id);
-                            status.incompatible_qos_status().policies().push_back(count);
-                        }
-                        ret = true;
-                        break;
-                    }
-                    //! TODO
-                    /*case statistics::INCONSISTENT_TOPIC:
-                       {
-                        writer->get_inconsistent_topic_status();
-                        ret = true;
-                        break;
-                       }*/
-                    case statistics::LIVELINESS_LOST:
-                    {
-                        LivelinessLostStatus liveliness_lost_status;
-                        writer->get_liveliness_lost_status(liveliness_lost_status);
-                        status.liveliness_lost_status().total_count(liveliness_lost_status.total_count);
-                        ret = true;
-                        break;
-                    }
-                    case statistics::DEADLINE_MISSED:
-                    {
-                        DeadlineMissedStatus deadline_missed_status;
-                        writer->get_offered_deadline_missed_status(deadline_missed_status);
-                        status.deadline_missed_status().total_count(deadline_missed_status.total_count);
-                        std::memcpy(
-                            status.deadline_missed_status().last_instance_handle().data(),
-                            deadline_missed_status.last_instance_handle.value,
-                            16);
-                        ret = true;
-                        break;
-                    }
-                    default:
-                    {
-                        EPROSIMA_LOG_ERROR(PUBLISHER, "Queried status not available for this entity " << status._d());
-                        break;
-                    }
-                }
-
-                break;
-            }
-        }
-    }
-    else
-    {
-        EPROSIMA_LOG_ERROR(PUBLISHER, "Could not retrieve datawriters");
-    }
-
-
-    return ret;
-}
-
-#endif //FASTDDS_STATISTICS
 
 } // dds
 } // fastdds

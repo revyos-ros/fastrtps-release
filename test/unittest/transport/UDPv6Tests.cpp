@@ -12,27 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <limits>
 #include <memory>
 #include <thread>
 
 #include <asio.hpp>
 #include <gtest/gtest.h>
-
+#include <MockReceiverResource.h>
 #include <fastdds/dds/log/Log.hpp>
 #include <fastrtps/transport/UDPv6TransportDescriptor.h>
-#include <fastrtps/utils/IPLocator.h>
+#include <fastrtps/rtps/network/NetworkFactory.h>
 #include <fastrtps/utils/Semaphore.h>
-
-#include <MockReceiverResource.h>
+#include <fastrtps/utils/IPLocator.h>
 #include <rtps/transport/UDPv6Transport.h>
 
 using namespace eprosima::fastrtps::rtps;
 using namespace eprosima::fastrtps;
 using UDPv6Transport = eprosima::fastdds::rtps::UDPv6Transport;
-
-#ifndef __APPLE__
-const uint32_t ReceiveBufferCapacity = 65536;
-#endif // ifndef __APPLE__
 
 #if defined(_WIN32)
 #define GET_PID _getpid
@@ -58,14 +54,6 @@ class UDPv6Tests : public ::testing::Test
 {
 public:
 
-    void SetUp() override
-    {
-#ifdef __APPLE__
-        // TODO: fix IPv6 issues related with zone ID
-        GTEST_SKIP() << "UDPv6 tests are disabled in Mac";
-#endif // ifdef __APPLE__
-    }
-
     UDPv6Tests()
     {
         HELPER_SetDescriptorDefaults();
@@ -82,6 +70,74 @@ public:
     std::unique_ptr<std::thread> senderThread;
     std::unique_ptr<std::thread> receiverThread;
 };
+
+TEST_F(UDPv6Tests, wrong_configuration)
+{
+    // Too big sendBufferSize
+    {
+        UDPv6TransportDescriptor wrong_descriptor;
+        wrong_descriptor.sendBufferSize = std::numeric_limits<uint32_t>::max();
+        UDPv6Transport transportUnderTest(wrong_descriptor);
+        ASSERT_FALSE(transportUnderTest.init());
+        eprosima::fastdds::dds::Log::Flush();
+    }
+
+    // Too big receiveBufferSize
+    {
+        UDPv6TransportDescriptor wrong_descriptor;
+        wrong_descriptor.receiveBufferSize = std::numeric_limits<uint32_t>::max();
+        UDPv6Transport transportUnderTest(wrong_descriptor);
+        ASSERT_FALSE(transportUnderTest.init());
+        eprosima::fastdds::dds::Log::Flush();
+    }
+
+    // Too big maxMessageSize
+    {
+        UDPv6TransportDescriptor wrong_descriptor;
+        wrong_descriptor.maxMessageSize = std::numeric_limits<uint32_t>::max();
+        UDPv6Transport transportUnderTest(wrong_descriptor);
+        ASSERT_FALSE(transportUnderTest.init());
+        eprosima::fastdds::dds::Log::Flush();
+    }
+
+    // maxMessageSize bigger than receiveBufferSize
+    {
+        UDPv6TransportDescriptor wrong_descriptor;
+        wrong_descriptor.maxMessageSize = 10;
+        wrong_descriptor.receiveBufferSize = 5;
+        UDPv6Transport transportUnderTest(wrong_descriptor);
+        ASSERT_FALSE(transportUnderTest.init());
+        eprosima::fastdds::dds::Log::Flush();
+    }
+
+    // maxMessageSize bigger than sendBufferSize
+    {
+        UDPv6TransportDescriptor wrong_descriptor;
+        wrong_descriptor.maxMessageSize = 10;
+        wrong_descriptor.sendBufferSize = 5;
+        UDPv6Transport transportUnderTest(wrong_descriptor);
+        ASSERT_FALSE(transportUnderTest.init());
+        eprosima::fastdds::dds::Log::Flush();
+    }
+
+    // Buffer sizes automatically decrease
+    {
+        UDPv6TransportDescriptor wrong_descriptor;
+        wrong_descriptor.sendBufferSize = static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+        wrong_descriptor.receiveBufferSize = static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+        wrong_descriptor.maxMessageSize = 1470;
+        UDPv6Transport transportUnderTest(wrong_descriptor);
+        ASSERT_TRUE(transportUnderTest.init());
+        auto* final_cfg = transportUnderTest.configuration();
+        EXPECT_GE(final_cfg->sendBufferSize, final_cfg->maxMessageSize);
+        // The system could allow for the send buffer to be MAX_INT, so we cannot check it to be strictly lower
+        EXPECT_LE(final_cfg->sendBufferSize, wrong_descriptor.sendBufferSize);
+        EXPECT_GE(final_cfg->receiveBufferSize, final_cfg->maxMessageSize);
+        // The system could allow for the receive buffer to be MAX_INT, so we cannot check it to be strictly lower
+        EXPECT_LE(final_cfg->receiveBufferSize, wrong_descriptor.receiveBufferSize);
+        eprosima::fastdds::dds::Log::Flush();
+    }
+}
 
 TEST_F(UDPv6Tests, conversion_to_ip6_string)
 {
@@ -168,7 +224,6 @@ TEST_F(UDPv6Tests, send_and_receive_between_ports)
     MockMessageReceiver* msg_recv = dynamic_cast<MockMessageReceiver*>(receiver.CreateMessageReceiver());
 
     SendResourceList send_resource_list;
-    ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, multicastLocator));
     ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, outputChannelLocator)); // Includes loopback
     ASSERT_FALSE(send_resource_list.empty());
     ASSERT_TRUE(transportUnderTest.IsInputChannelOpen(multicastLocator));
@@ -228,7 +283,6 @@ TEST_F(UDPv6Tests, send_to_loopback)
     MockMessageReceiver* msg_recv = dynamic_cast<MockMessageReceiver*>(receiver.CreateMessageReceiver());
 
     SendResourceList send_resource_list;
-    ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, multicastLocator));
     ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, outputChannelLocator));
     ASSERT_FALSE(send_resource_list.empty());
     ASSERT_TRUE(transportUnderTest.IsInputChannelOpen(multicastLocator));
@@ -351,15 +405,15 @@ TEST_F(UDPv6Tests, send_to_wrong_interface)
     ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, outputChannelLocator));
     ASSERT_FALSE(send_resource_list.empty());
 
-    Locator_t empty_locator;
-    empty_locator.kind = LOCATOR_KIND_UDPv6;
-    EXPECT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, empty_locator));
-
     LocatorList_t locator_list;
-    locator_list.push_back(empty_locator);
+    Locator_t locator;
+    locator.kind = LOCATOR_KIND_UDPv6;
+    locator_list.push_back(locator);
     Locators locators_begin(locator_list.begin());
     Locators locators_end(locator_list.end());
 
+    //Sending through a different IP will NOT work, except 0.0.0.0
+    IPLocator::setIPv6(outputChannelLocator, std::string("fe80::ffff:6f6f:6f6f"));
     std::vector<octet> message = { 'H', 'e', 'l', 'l', 'o' };
     ASSERT_FALSE(send_resource_list.at(0)->send(message.data(), (uint32_t)message.size(), &locators_begin,
             &locators_end,
@@ -414,7 +468,6 @@ TEST_F(UDPv6Tests, send_to_allowed_interface)
             remoteMulticastLocator.port = g_default_port;
             remoteMulticastLocator.kind = LOCATOR_KIND_UDPv6;
             IPLocator::setIPv6(remoteMulticastLocator, std::string("ff1e::ffff:efff:104"));
-            ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, remoteMulticastLocator));
 
             LocatorList_t locator_list;
             locator_list.push_back(remoteMulticastLocator);
@@ -471,7 +524,6 @@ TEST_F(UDPv6Tests, send_and_receive_between_allowed_sockets_using_localhost)
     MockMessageReceiver* msg_recv = dynamic_cast<MockMessageReceiver*>(receiver.CreateMessageReceiver());
 
     SendResourceList send_resource_list;
-    ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, unicastLocator));
     ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, outputChannelLocator)); // Includes loopback
     ASSERT_FALSE(send_resource_list.empty());
     ASSERT_TRUE(transportUnderTest.IsInputChannelOpen(unicastLocator));
@@ -532,7 +584,6 @@ TEST_F(UDPv6Tests, send_and_receive_between_allowed_sockets_using_unicast)
         MockMessageReceiver* msg_recv = dynamic_cast<MockMessageReceiver*>(receiver.CreateMessageReceiver());
 
         SendResourceList send_resource_list;
-        ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, unicastLocator));
         ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, outputChannelLocator)); // Includes loopback
         ASSERT_FALSE(send_resource_list.empty());
         ASSERT_TRUE(transportUnderTest.IsInputChannelOpen(unicastLocator));
@@ -594,7 +645,6 @@ TEST_F(UDPv6Tests, send_and_receive_between_allowed_sockets_using_unicast_to_mul
         MockMessageReceiver* msg_recv = dynamic_cast<MockMessageReceiver*>(receiver.CreateMessageReceiver());
 
         SendResourceList send_resource_list;
-        ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, unicastLocator));
         ASSERT_TRUE(transportUnderTest.OpenOutputChannel(send_resource_list, outputChannelLocator)); // Includes loopback
         ASSERT_FALSE(send_resource_list.empty());
         ASSERT_TRUE(transportUnderTest.IsInputChannelOpen(unicastLocator));

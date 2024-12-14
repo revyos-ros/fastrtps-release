@@ -58,9 +58,12 @@ BuiltinProtocols::BuiltinProtocols()
 BuiltinProtocols::~BuiltinProtocols()
 {
     // Send participant is disposed
-    if (mp_PDP != nullptr)
+    if (nullptr != mp_PDP)
     {
+        // Send participant is disposed
         mp_PDP->announceParticipantState(true, true);
+        // Consider all discovered participants as disposed
+        mp_PDP->disable();
     }
 
     // TODO Auto-generated destructor stub
@@ -85,7 +88,7 @@ bool BuiltinProtocols::initBuiltinProtocols(
         m_DiscoveryServers = m_att.discovery_config.m_DiscoveryServers;
     }
 
-    filter_server_remote_locators(p_part->network_factory());
+    transform_server_remote_locators(p_part->network_factory());
 
     const RTPSParticipantAllocationAttributes& allocation = p_part->getRTPSParticipantAttributes().allocation;
 
@@ -93,7 +96,7 @@ bool BuiltinProtocols::initBuiltinProtocols(
     switch (m_att.discovery_config.discoveryProtocol)
     {
         case DiscoveryProtocol_t::NONE:
-            EPROSIMA_LOG_WARNING(RTPS_PDP, "No participant discovery protocol specified");
+            logWarning(RTPS_PDP, "No participant discovery protocol specified");
             return true;
 
         case DiscoveryProtocol_t::SIMPLE:
@@ -101,7 +104,7 @@ bool BuiltinProtocols::initBuiltinProtocols(
             break;
 
         case DiscoveryProtocol_t::EXTERNAL:
-            EPROSIMA_LOG_ERROR(RTPS_PDP, "Flag only present for debugging purposes");
+            logError(RTPS_PDP, "Flag only present for debugging purposes");
             return false;
 
         case DiscoveryProtocol_t::CLIENT:
@@ -123,13 +126,13 @@ bool BuiltinProtocols::initBuiltinProtocols(
             break;
 
         default:
-            EPROSIMA_LOG_ERROR(RTPS_PDP, "Unknown DiscoveryProtocol_t specified.");
+            logError(RTPS_PDP, "Unknown DiscoveryProtocol_t specified.");
             return false;
     }
 
     if (!mp_PDP->init(mp_participantImpl))
     {
-        EPROSIMA_LOG_ERROR(RTPS_PDP, "Participant discovery configuration failed");
+        logError(RTPS_PDP, "Participant discovery configuration failed");
         delete mp_PDP;
         mp_PDP = nullptr;
         return false;
@@ -169,26 +172,21 @@ bool BuiltinProtocols::updateMetatrafficLocators(
     return true;
 }
 
-void BuiltinProtocols::filter_server_remote_locators(
+void BuiltinProtocols::transform_server_remote_locators(
         NetworkFactory& nf)
 {
     eprosima::shared_lock<eprosima::shared_mutex> disc_lock(getDiscoveryMutex());
 
     for (eprosima::fastdds::rtps::RemoteServerAttributes& rs : m_DiscoveryServers)
     {
-        LocatorList_t allowed_locators;
         for (Locator_t& loc : rs.metatrafficUnicastLocatorList)
         {
-            if (nf.is_locator_remote_or_allowed(loc))
+            Locator_t localized;
+            if (nf.transform_remote_locator(loc, localized))
             {
-                allowed_locators.push_back(loc);
-            }
-            else
-            {
-                EPROSIMA_LOG_WARNING(RTPS_PDP, "Ignoring remote server locator " << loc << " : not allowed.");
+                loc = localized;
             }
         }
-        rs.metatrafficUnicastLocatorList.swap(allowed_locators);
     }
 }
 
@@ -199,29 +197,28 @@ bool BuiltinProtocols::addLocalWriter(
 {
     bool ok = true;
 
-    if (mp_PDP != nullptr)
+    if (nullptr != mp_PDP)
     {
         ok = mp_PDP->getEDP()->newLocalWriterProxyData(w, topicAtt, wqos);
 
         if (!ok)
         {
-            EPROSIMA_LOG_WARNING(RTPS_EDP, "Failed register WriterProxyData in EDP");
+            logWarning(RTPS_EDP, "Failed register WriterProxyData in EDP");
             return false;
         }
     }
     else
     {
-        EPROSIMA_LOG_WARNING(RTPS_EDP, "EDP is not used in this Participant, register a Writer is impossible");
+        logWarning(RTPS_EDP, "EDP is not used in this Participant, register a Writer is impossible");
     }
 
-    if (mp_WLP != nullptr)
+    if (nullptr != mp_WLP)
     {
         ok &= mp_WLP->add_local_writer(w, wqos);
     }
     else
     {
-        EPROSIMA_LOG_WARNING(RTPS_LIVELINESS,
-                "LIVELINESS is not used in this Participant, register a Writer is impossible");
+        logWarning(RTPS_LIVELINESS, "LIVELINESS is not used in this Participant, register a Writer is impossible");
     }
     return ok;
 }
@@ -234,22 +231,22 @@ bool BuiltinProtocols::addLocalReader(
 {
     bool ok = true;
 
-    if (mp_PDP != nullptr)
+    if (nullptr != mp_PDP)
     {
         ok = mp_PDP->getEDP()->newLocalReaderProxyData(R, topicAtt, rqos, content_filter);
 
         if (!ok)
         {
-            EPROSIMA_LOG_WARNING(RTPS_EDP, "Failed register ReaderProxyData in EDP");
+            logWarning(RTPS_EDP, "Failed register ReaderProxyData in EDP");
             return false;
         }
     }
     else
     {
-        EPROSIMA_LOG_WARNING(RTPS_EDP, "EDP is not used in this Participant, register a Reader is impossible");
+        logWarning(RTPS_EDP, "EDP is not used in this Participant, register a Reader is impossible");
     }
 
-    if (mp_WLP != nullptr)
+    if (nullptr != mp_WLP)
     {
         ok &= mp_WLP->add_local_reader(R, rqos);
     }
@@ -263,7 +260,7 @@ bool BuiltinProtocols::updateLocalWriter(
         const WriterQos& wqos)
 {
     bool ok = false;
-    if (mp_PDP != nullptr && mp_PDP->getEDP() != nullptr)
+    if ((nullptr != mp_PDP) && (nullptr != mp_PDP->getEDP()))
     {
         ok = mp_PDP->getEDP()->updatedLocalWriter(W, topicAtt, wqos);
     }
@@ -277,7 +274,7 @@ bool BuiltinProtocols::updateLocalReader(
         const fastdds::rtps::ContentFilterProperty* content_filter)
 {
     bool ok = false;
-    if (mp_PDP != nullptr && mp_PDP->getEDP() != nullptr)
+    if ((nullptr != mp_PDP) && (nullptr != mp_PDP->getEDP()))
     {
         ok = mp_PDP->getEDP()->updatedLocalReader(R, topicAtt, rqos, content_filter);
     }
@@ -288,11 +285,11 @@ bool BuiltinProtocols::removeLocalWriter(
         RTPSWriter* W)
 {
     bool ok = false;
-    if (mp_WLP != nullptr)
+    if (nullptr != mp_WLP)
     {
         ok |= mp_WLP->remove_local_writer(W);
     }
-    if (mp_PDP != nullptr && mp_PDP->getEDP() != nullptr)
+    if ((nullptr != mp_PDP) && (nullptr != mp_PDP->getEDP()))
     {
         ok |= mp_PDP->getEDP()->removeLocalWriter(W);
     }
@@ -303,11 +300,11 @@ bool BuiltinProtocols::removeLocalReader(
         RTPSReader* R)
 {
     bool ok = false;
-    if (mp_WLP != nullptr)
+    if (nullptr != mp_WLP)
     {
         ok |= mp_WLP->remove_local_reader(R);
     }
-    if (mp_PDP != nullptr && mp_PDP->getEDP() != nullptr)
+    if ((nullptr != mp_PDP) && (nullptr != mp_PDP->getEDP()))
     {
         ok |= mp_PDP->getEDP()->removeLocalReader(R);
     }
@@ -324,7 +321,7 @@ void BuiltinProtocols::announceRTPSParticipantState()
     }
     else if (m_att.discovery_config.discoveryProtocol != DiscoveryProtocol_t::NONE)
     {
-        EPROSIMA_LOG_ERROR(RTPS_EDP, "Trying to use BuiltinProtocols interfaces before initBuiltinProtocols call");
+        logError(RTPS_EDP, "Trying to use BuiltinProtocols interfaces before initBuiltinProtocols call");
     }
 }
 
@@ -339,7 +336,7 @@ void BuiltinProtocols::stopRTPSParticipantAnnouncement()
     }
     else if (m_att.discovery_config.discoveryProtocol != DiscoveryProtocol_t::NONE)
     {
-        EPROSIMA_LOG_ERROR(RTPS_EDP, "Trying to use BuiltinProtocols interfaces before initBuiltinProtocols call");
+        logError(RTPS_EDP, "Trying to use BuiltinProtocols interfaces before initBuiltinProtocols call");
     }
 }
 
@@ -353,7 +350,7 @@ void BuiltinProtocols::resetRTPSParticipantAnnouncement()
     }
     else if (m_att.discovery_config.discoveryProtocol != DiscoveryProtocol_t::NONE)
     {
-        EPROSIMA_LOG_ERROR(RTPS_EDP, "Trying to use BuiltinProtocols interfaces before initBuiltinProtocols call");
+        logError(RTPS_EDP, "Trying to use BuiltinProtocols interfaces before initBuiltinProtocols call");
     }
 }
 

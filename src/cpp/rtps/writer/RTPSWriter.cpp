@@ -17,23 +17,21 @@
  *
  */
 
+#include <fastdds/rtps/writer/RTPSWriter.h>
+
 #include <mutex>
-
-#include <rtps/history/BasicPayloadPool.hpp>
-#include <rtps/history/CacheChangePool.h>
-
-#include <rtps/DataSharing/DataSharingNotifier.hpp>
-#include <rtps/DataSharing/WriterPool.hpp>
-
-#include <rtps/participant/RTPSParticipantImpl.h>
 
 #include <fastdds/dds/log/Log.hpp>
 
-#include <fastdds/rtps/writer/RTPSWriter.h>
-
+#include <fastdds/rtps/attributes/PropertyPolicy.h>
 #include <fastdds/rtps/history/WriterHistory.h>
-
 #include <fastdds/rtps/messages/RTPSMessageCreator.h>
+
+#include <rtps/DataSharing/DataSharingNotifier.hpp>
+#include <rtps/DataSharing/WriterPool.hpp>
+#include <rtps/history/BasicPayloadPool.hpp>
+#include <rtps/history/CacheChangePool.h>
+#include <rtps/participant/RTPSParticipantImpl.h>
 
 #include <statistics/rtps/StatisticsBase.hpp>
 #include <statistics/rtps/messages/RTPSStatisticsMessages.hpp>
@@ -109,6 +107,22 @@ void RTPSWriter::init(
         const std::shared_ptr<IChangePool>& change_pool,
         const WriterAttributes& att)
 {
+    {
+        const std::string* max_size_property =
+                PropertyPolicyHelper::find_property(att.endpoint.properties, "fastdds.max_message_size");
+        if (max_size_property != nullptr)
+        {
+            try
+            {
+                max_output_message_size_ = std::stoul(*max_size_property);
+            }
+            catch (const std::exception& e)
+            {
+                logError(RTPS_WRITER, "Error parsing max_message_size property: " << e.what());
+            }
+        }
+    }
+
     payload_pool_ = payload_pool;
     change_pool_ = change_pool;
     fixed_payload_size_ = 0;
@@ -122,7 +136,7 @@ void RTPSWriter::init(
         std::shared_ptr<WriterPool> pool = std::dynamic_pointer_cast<WriterPool>(payload_pool);
         if (!pool || !pool->init_shared_memory(this, att.endpoint.data_sharing_configuration().shm_directory()))
         {
-            EPROSIMA_LOG_ERROR(RTPS_WRITER, "Could not initialize DataSharing writer pool");
+            logError(RTPS_WRITER, "Could not initialize DataSharing writer pool");
         }
     }
 
@@ -131,12 +145,12 @@ void RTPSWriter::init(
 
     flow_controller_->register_writer(this);
 
-    EPROSIMA_LOG_INFO(RTPS_WRITER, "RTPSWriter created");
+    logInfo(RTPS_WRITER, "RTPSWriter created");
 }
 
 RTPSWriter::~RTPSWriter()
 {
-    EPROSIMA_LOG_INFO(RTPS_WRITER, "RTPSWriter destructor");
+    logInfo(RTPS_WRITER, "RTPSWriter destructor");
 
     // Deletion of the events has to be made in child destructor.
     // Also at this point all CacheChange_t must have been released by the child destructor
@@ -152,7 +166,7 @@ void RTPSWriter::deinit()
         std::lock_guard<RecursiveTimedMutex> guard(mp_mutex);
         for (auto it = mp_history->changesBegin(); it != mp_history->changesEnd(); ++it)
         {
-            flow_controller_->remove_change(*it, std::chrono::steady_clock::now() + std::chrono::hours(24));
+            flow_controller_->remove_change(*it);
         }
 
         for (auto it = mp_history->changesBegin(); it != mp_history->changesEnd(); ++it)
@@ -170,13 +184,13 @@ CacheChange_t* RTPSWriter::new_change(
         ChangeKind_t changeKind,
         InstanceHandle_t handle)
 {
-    EPROSIMA_LOG_INFO(RTPS_WRITER, "Creating new change");
+    logInfo(RTPS_WRITER, "Creating new change");
 
     std::lock_guard<RecursiveTimedMutex> guard(mp_mutex);
     CacheChange_t* reserved_change = nullptr;
     if (!change_pool_->reserve_cache(reserved_change))
     {
-        EPROSIMA_LOG_WARNING(RTPS_WRITER, "Problem reserving cache from pool");
+        logWarning(RTPS_WRITER, "Problem reserving cache from pool");
         return nullptr;
     }
 
@@ -184,21 +198,20 @@ CacheChange_t* RTPSWriter::new_change(
     if (!payload_pool_->get_payload(payload_size, *reserved_change))
     {
         change_pool_->release_cache(reserved_change);
-        EPROSIMA_LOG_WARNING(RTPS_WRITER, "Problem reserving payload from pool");
+        logWarning(RTPS_WRITER, "Problem reserving payload from pool");
         return nullptr;
     }
 
     reserved_change->kind = changeKind;
     if (m_att.topicKind == WITH_KEY && !handle.isDefined())
     {
-        EPROSIMA_LOG_WARNING(RTPS_WRITER, "Changes in KEYED Writers need a valid instanceHandle");
+        logWarning(RTPS_WRITER, "Changes in KEYED Writers need a valid instanceHandle");
     }
     reserved_change->instanceHandle = handle;
     reserved_change->writerGUID = m_guid;
     reserved_change->writer_info.previous = nullptr;
     reserved_change->writer_info.next = nullptr;
     reserved_change->writer_info.num_sent_submessages = 0;
-    reserved_change->vendor_id = c_VendorId_eProsima;
     return reserved_change;
 }
 
@@ -206,27 +219,26 @@ CacheChange_t* RTPSWriter::new_change(
         ChangeKind_t changeKind,
         InstanceHandle_t handle)
 {
-    EPROSIMA_LOG_INFO(RTPS_WRITER, "Creating new change");
+    logInfo(RTPS_WRITER, "Creating new change");
 
     std::lock_guard<RecursiveTimedMutex> guard(mp_mutex);
     CacheChange_t* reserved_change = nullptr;
     if (!change_pool_->reserve_cache(reserved_change))
     {
-        EPROSIMA_LOG_WARNING(RTPS_WRITER, "Problem reserving cache from pool");
+        logWarning(RTPS_WRITER, "Problem reserving cache from pool");
         return nullptr;
     }
 
     reserved_change->kind = changeKind;
     if (m_att.topicKind == WITH_KEY && !handle.isDefined())
     {
-        EPROSIMA_LOG_WARNING(RTPS_WRITER, "Changes in KEYED Writers need a valid instanceHandle");
+        logWarning(RTPS_WRITER, "Changes in KEYED Writers need a valid instanceHandle");
     }
     reserved_change->instanceHandle = handle;
     reserved_change->writerGUID = m_guid;
     reserved_change->writer_info.previous = nullptr;
     reserved_change->writer_info.next = nullptr;
     reserved_change->writer_info.num_sent_submessages = 0;
-    reserved_change->vendor_id = c_VendorId_eProsima;
     return reserved_change;
 }
 
@@ -281,7 +293,7 @@ uint32_t RTPSWriter::getTypeMaxSerialized()
 bool RTPSWriter::remove_older_changes(
         unsigned int max)
 {
-    EPROSIMA_LOG_INFO(RTPS_WRITER, "Starting process clean_history for writer " << getGuid());
+    logInfo(RTPS_WRITER, "Starting process clean_history for writer " << getGuid());
     std::lock_guard<RecursiveTimedMutex> guard(mp_mutex);
     bool limit = (max != 0);
 
@@ -298,16 +310,20 @@ bool RTPSWriter::remove_older_changes(
     return at_least_one;
 }
 
-constexpr uint32_t info_dst_message_length = 16;
-constexpr uint32_t info_ts_message_length = 12;
-constexpr uint32_t data_frag_submessage_header_length = 36;
-constexpr uint32_t heartbeat_message_length = 32;
+CONSTEXPR uint32_t info_dst_message_length = 16;
+CONSTEXPR uint32_t info_ts_message_length = 12;
+CONSTEXPR uint32_t data_frag_submessage_header_length = 36;
+CONSTEXPR uint32_t heartbeat_message_length = 32;
 
 uint32_t RTPSWriter::getMaxDataSize()
 {
     uint32_t flow_max = flow_controller_->get_max_payload();
     uint32_t part_max = mp_RTPSParticipant->getMaxMessageSize();
     uint32_t max_size = flow_max > part_max ? part_max : flow_max;
+    if (max_output_message_size_ < max_size)
+    {
+        max_size = max_output_message_size_;
+    }
 
     max_size =  calculateMaxDataSize(max_size);
     return max_size &= ~3;
@@ -456,12 +472,6 @@ bool RTPSWriter::remove_statistics_listener(
         std::shared_ptr<fastdds::statistics::IListener> listener)
 {
     return remove_statistics_listener_impl(listener);
-}
-
-void RTPSWriter::set_enabled_statistics_writers_mask(
-        uint32_t enabled_writers)
-{
-    set_enabled_statistics_writers_mask_impl(enabled_writers);
 }
 
 #endif // FASTDDS_STATISTICS

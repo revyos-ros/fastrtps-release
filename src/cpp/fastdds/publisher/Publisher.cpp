@@ -112,20 +112,18 @@ DataWriter* Publisher::create_datawriter(
         Topic* topic,
         const DataWriterQos& qos,
         DataWriterListener* listener,
-        const StatusMask& mask,
-        std::shared_ptr<fastrtps::rtps::IPayloadPool> payload_pool)
+        const StatusMask& mask)
 {
-    return impl_->create_datawriter(topic, qos, listener, mask, payload_pool);
+    return impl_->create_datawriter(topic, qos, listener, mask);
 }
 
 DataWriter* Publisher::create_datawriter_with_profile(
         Topic* topic,
         const std::string& profile_name,
         DataWriterListener* listener,
-        const StatusMask& mask,
-        std::shared_ptr<fastrtps::rtps::IPayloadPool> payload_pool)
+        const StatusMask& mask)
 {
-    return impl_->create_datawriter_with_profile(topic, profile_name, listener, mask, payload_pool);
+    return impl_->create_datawriter_with_profile(topic, profile_name, listener, mask);
 }
 
 ReturnCode_t Publisher::delete_datawriter(
@@ -208,9 +206,14 @@ ReturnCode_t Publisher::get_default_datawriter_qos(
 
 ReturnCode_t Publisher::copy_from_topic_qos(
         fastdds::dds::DataWriterQos& writer_qos,
-        const fastdds::dds::TopicQos& topic_qos)
+        const fastdds::dds::TopicQos& topic_qos) const
 {
-    return PublisherImpl::copy_from_topic_qos(writer_qos, topic_qos);
+    static_cast<void> (writer_qos);
+    static_cast<void> (topic_qos);
+    return ReturnCode_t::RETCODE_UNSUPPORTED;
+    /*
+       return impl_->copy_from_topic_qos(writer_qos, topic_qos);
+     */
 }
 
 const fastrtps::rtps::InstanceHandle_t& Publisher::get_instance_handle() const
