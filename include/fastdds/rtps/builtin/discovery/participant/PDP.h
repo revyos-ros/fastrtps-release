@@ -22,9 +22,12 @@
 #ifndef DOXYGEN_SHOULD_SKIP_THIS_PUBLIC
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include <fastdds/rtps/attributes/RTPSParticipantAttributes.h>
 #include <fastdds/rtps/builtin/data/ReaderProxyData.h>
@@ -70,6 +73,7 @@ class RTPSWriter;
 class RTPSReader;
 class WriterHistory;
 class ReaderHistory;
+struct RTPSParticipantAllocationAttributes;
 class RTPSParticipantImpl;
 class RTPSParticipantListener;
 class BuiltinProtocols;
@@ -79,6 +83,7 @@ class ReaderProxyData;
 class WriterProxyData;
 class ParticipantProxyData;
 class ReaderListener;
+class PDPEndpoints;
 class PDPListener;
 class PDPServerListener;
 class ITopicPayloadPool;
@@ -125,6 +130,11 @@ public:
      * @return true if enabled correctly, or if already enabled; false otherwise
      */
     bool enable();
+
+    /**
+     * @brief Disable the Participant Discovery Protocol
+     */
+    void disable();
 
     virtual bool init(
             RTPSParticipantImpl* part) = 0;
@@ -639,6 +649,22 @@ private:
      */
     void set_external_participant_properties_(
             ParticipantProxyData* participant_data);
+
+    /**
+     * Performs all the necessary actions after removing a ParticipantProxyData from the
+     * participant_proxies_ collection.
+     *
+     * @param pdata ParticipantProxyData that was removed.
+     * @param partGUID GUID of the removed participant.
+     * @param reason Reason why the participant was removed.
+     * @param listener Listener to be notified of the unmatches / removal.
+     */
+    void actions_on_remote_participant_removed(
+            ParticipantProxyData* pdata,
+            const GUID_t& partGUID,
+            ParticipantDiscoveryInfo::DISCOVERY_STATUS reason,
+            RTPSParticipantListener* listener);
+
 };
 
 
